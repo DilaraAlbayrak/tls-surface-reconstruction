@@ -8,8 +8,7 @@ struct PointData
 	float r, g, b;	
 };
 
-class PointCloud
+struct PointCloud
 {
-public:
 	std::vector<PointData> points;
 };

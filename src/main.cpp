@@ -2,6 +2,7 @@
 #include <string>
 #include "PointCloud.hpp"
 #include "PointCloudIO.hpp"
+#include "Reconstructor.hpp"
 
 int main()
 {
@@ -25,6 +26,8 @@ int main()
                   << "), Intensity: " << pt.intensity 
                   << ", Color: (" << pt.r << ", " << pt.g << ", " << pt.b << ")\n";
 	}
+
+	Reconstructor::process(cloud);
 
 	return 0;
 }
