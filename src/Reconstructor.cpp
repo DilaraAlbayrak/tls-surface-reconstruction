@@ -2,6 +2,7 @@
 #include <iostream>
 #include <unordered_map>
 #include <cmath>
+#include "nanoflann.hpp"
 
 namespace
 {
@@ -58,6 +59,21 @@ namespace
 			centroid.intensity = static_cast<int>(intensity / count);
 			return centroid;
 		}
+	};
+
+	struct PointCloudAdaptor
+	{
+		const PointCloud& cloud;
+		PointCloudAdaptor(const PointCloud& c) : cloud(c) {}
+		inline size_t kdtree_get_point_count() const { return cloud.points.size(); }
+		inline float kdtree_get_pt(const size_t idx, const size_t dim) const
+		{
+			if (dim == 0) return cloud.points[idx].x;
+			else if (dim == 1) return cloud.points[idx].y;
+			else return cloud.points[idx].z;
+		}
+		template <class BBOX>
+		bool kdtree_get_bbox(BBOX&) const { return false; }
 	};
 }
 
