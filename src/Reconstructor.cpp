@@ -126,5 +126,18 @@ namespace Reconstructor
 		PointCloud filteredCloud = voxelGridDownsample(cloud, VOXEL_SIZE);
 
 		std::cout << "Downsampled point cloud size: " << filteredCloud.points.size() << " points.\n";
+
+		std::cout << "Building KD-Tree for nearest neighbor search...\n";
+
+		PointCloudAdaptor adaptor(filteredCloud);
+		using KDTree = nanoflann::KDTreeSingleIndexAdaptor<
+			nanoflann::L2_Simple_Adaptor<float, PointCloudAdaptor>,
+			PointCloudAdaptor,
+			3 /* dimension */>;
+
+		KDTree kdTree(3, adaptor, nanoflann::KDTreeSingleIndexAdaptorParams(15)); // 3 is for dimension, 15 is the maximum number of points in a leaf node
+		kdTree.buildIndex();
+
+		std::cout << "KD-Tree built successfully.\n";
 	}
 }
