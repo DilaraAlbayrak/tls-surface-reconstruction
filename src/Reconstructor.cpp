@@ -139,5 +139,25 @@ namespace Reconstructor
 		kdTree.buildIndex();
 
 		std::cout << "KD-Tree built successfully.\n";
+
+		// 1. How many points are actually indexed?
+		std::cout << "Indexed points: " << kdTree.size(kdTree) << "\n";
+
+		// 2. How much RAM does the KD-Tree consume? (Does not include point cloud size)
+		std::cout << "KD-Tree RAM usage: " << kdTree.usedMemory(kdTree) / (1024.0 * 1024.0) << " MB\n";
+
+		// 3. Inspect the global Bounding Box of the indexed space
+		std::cout << "Bounding Box Min X: " << kdTree.root_bbox_[0].low << "\n";
+		std::cout << "Bounding Box Max X: " << kdTree.root_bbox_[0].high << "\n";
+
+		// 4. Look at the root node's splitting axis
+		if (kdTree.root_node_ != nullptr && kdTree.root_node_->child1 != nullptr)
+		{
+			// 0 = X, 1 = Y, 2 = Z
+			std::cout << "Root node split dimension: " << kdTree.root_node_->node_type.sub.divfeat << "\n";
+		}
+
+		// 5. Check the permuted index array
+		std::cout << "First permuted index: " << kdTree.vAcc_[0] << "\n";
 	}
 }
