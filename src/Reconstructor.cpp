@@ -4,6 +4,7 @@
 #include <cmath>
 #include <vector>
 #include "nanoflann.hpp"
+#include <Eigen/Dense>
 
 namespace
 {
@@ -76,6 +77,43 @@ namespace
 		template <class BBOX>
 		bool kdtree_get_bbox(BBOX&) const { return false; }
 	};
+
+	NormalData computeNormalPCA(const PointCloud& cloud, const std::vector<unsigned int>& neighbours, const PointData& centre)
+	{
+		if (neighbours.size() < 3) return { 0.0f, 0.0f, 1.0f };
+
+		Eigen::Vector3f centroid = Eigen::Vector3f::Zero();
+		for (size_t idx : neighbours)
+		{
+			centroid.x() += cloud.points[idx].x;
+			centroid.y() += cloud.points[idx].y;
+			centroid.z() += cloud.points[idx].z;
+		}
+		centroid /= static_cast<float>(neighbours.size());
+
+		Eigen::Matrix3f covariance = Eigen::Matrix3f::Zero();
+		for (size_t idx : neighbours)
+		{
+			Eigen::Vector3f pt(cloud.points[idx].x, cloud.points[idx].y, cloud.points[idx].z);
+			Eigen::Vector3f centered = pt - centroid;
+			covariance += centered * centered.transpose();
+		}
+		covariance /= static_cast<float>(neighbours.size());
+
+		Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver(covariance);
+
+		if (solver.info() != Eigen::Success) return { 0.0f, 0.0f, 1.0f };
+
+		Eigen::Vector3f normal = solver.eigenvectors().col(0); // Smallest eigenvalue corresponds to the normal, i.e. the direction of least variance
+		Eigen::Vector3f viewPoint(0.0f - centre.x, 0.0f - centre.y, 0.0f - centre.z);
+		
+		if (normal.dot(viewPoint) < 0.0f)
+		{
+			normal = -normal;
+		}
+
+		return { normal.x(), normal.y(), normal.z() };
+	}
 }
 
 namespace Reconstructor
@@ -141,24 +179,35 @@ namespace Reconstructor
 
 		std::cout << "KD-Tree built successfully.\n";
 
-		// 1. How many points are actually indexed?
-		std::cout << "Indexed points: " << kdTree.size(kdTree) << "\n";
+		const size_t K_NEIGHBOURS = 15;
+		filteredCloud.normals.resize(filteredCloud.points.size());
 
-		// 2. How much RAM does the KD-Tree consume? (Does not include point cloud size)
-		std::cout << "KD-Tree RAM usage: " << kdTree.usedMemory(kdTree) / (1024.0 * 1024.0) << " MB\n";
-
-		// 3. Inspect the global Bounding Box of the indexed space
-		std::cout << "Bounding Box Min X: " << kdTree.root_bbox_[0].low << "\n";
-		std::cout << "Bounding Box Max X: " << kdTree.root_bbox_[0].high << "\n";
-
-		// 4. Look at the root node's splitting axis
-		if (kdTree.root_node_ != nullptr && kdTree.root_node_->child1 != nullptr)
+		std::vector<unsigned int> neighbourIndices(K_NEIGHBOURS);
+		std::vector<float> neighbourDistances(K_NEIGHBOURS);
+		for (size_t i = 0; i < filteredCloud.points.size(); ++i)
 		{
-			// 0 = X, 1 = Y, 2 = Z
-			std::cout << "Root node split dimension: " << kdTree.root_node_->node_type.sub.divfeat << "\n";
+			const auto& pt = filteredCloud.points[i];
+			float queryPoint[3] = { pt.x, pt.y, pt.z };
+
+			size_t numFound = kdTree.knnSearch(
+				queryPoint,
+				K_NEIGHBOURS,
+				neighbourIndices.data(),
+				neighbourDistances.data()
+			);
+
+			if (numFound > 0)
+			{
+				neighbourIndices.resize(numFound);
+				filteredCloud.normals[i] = computeNormalPCA(filteredCloud, neighbourIndices, pt);
+				neighbourIndices.resize(K_NEIGHBOURS);
+			}
+			else
+			{
+				filteredCloud.normals[i] = { 0.0f, 0.0f, 1.0f };
+			}
 		}
 
-		// 5. Check the permuted index array
-		std::cout << "First permuted index: " << kdTree.vAcc_[0] << "\n";
+		std::cout << "Normals calculated successfully for all points.\n";
 	}
 }
