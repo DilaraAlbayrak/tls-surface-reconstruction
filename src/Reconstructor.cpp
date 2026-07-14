@@ -2,6 +2,7 @@
 #include <iostream>
 #include <unordered_map>
 #include <cmath>
+#include <vector>
 #include "nanoflann.hpp"
 
 namespace
