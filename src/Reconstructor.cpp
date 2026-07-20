@@ -184,6 +184,8 @@ namespace Reconstructor
 
 		std::vector<unsigned int> neighbourIndices(K_NEIGHBOURS);
 		std::vector<float> neighbourDistances(K_NEIGHBOURS);
+		size_t failedPCA = 0;
+
 		for (size_t i = 0; i < filteredCloud.points.size(); ++i)
 		{
 			const auto& pt = filteredCloud.points[i];
@@ -201,11 +203,36 @@ namespace Reconstructor
 				neighbourIndices.resize(numFound);
 				filteredCloud.normals[i] = computeNormalPCA(filteredCloud, neighbourIndices, pt);
 				neighbourIndices.resize(K_NEIGHBOURS);
+
+				// Check if PCA failed to compute a valid normal (i.e., returned the default normal)
+				if (filteredCloud.normals[i].nx == 0.0f &&
+					filteredCloud.normals[i].ny == 0.0f &&
+					filteredCloud.normals[i].nz == 1.0f)
+				{
+					failedPCA++;
+				}
 			}
 			else
 			{
 				filteredCloud.normals[i] = { 0.0f, 0.0f, 1.0f };
+				failedPCA++;
 			}
+		}
+
+		// Print warning for degenerate normals
+		if (failedPCA > 0)
+		{
+			std::cout << "Warning: " << failedPCA << " points resulted in default/failed normals.\n";
+		}
+
+		// Print the first 5 calculated normals for verification
+		std::cout << "\n--- DEBUG: First 5 Calculated Normals ---\n";
+		for (size_t i = 0; i < 5 && i < filteredCloud.normals.size(); ++i)
+		{
+			const auto& pt = filteredCloud.points[i];
+			const auto& n = filteredCloud.normals[i];
+			std::cout << "Point (" << pt.x << ", " << pt.y << ", " << pt.z << ") -> "
+				<< "Normal: [" << n.nx << ", " << n.ny << ", " << n.nz << "]\n";
 		}
 
 		std::cout << "Normals calculated successfully for all points.\n";

@@ -1,5 +1,6 @@
 #include <iostream>
 #include <string>
+#include <chrono>
 #include "PointCloud.hpp"
 #include "PointCloudIO.hpp"
 #include "Reconstructor.hpp"
@@ -27,7 +28,15 @@ int main()
                   << ", Color: (" << pt.r << ", " << pt.g << ", " << pt.b << ")\n";
 	}
 
+	// To measure processing time
+    auto start = std::chrono::high_resolution_clock::now();
+
 	Reconstructor::process(cloud);
+
+	// Measure end time
+    auto end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> diff = end - start;
+    std::cout << "\nTotal processing time: " << diff.count() << " seconds\n";
 
 	return 0;
 }
