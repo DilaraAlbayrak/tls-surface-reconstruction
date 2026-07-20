@@ -82,4 +82,42 @@ namespace PointCloudIO
 
         return true;
     }
+
+    bool saveToPLY(const std::string& filepath, const PointCloud& cloud)
+    {
+        std::ofstream file(filepath);
+        if (!file.is_open()) return false;
+
+        // Write PLY header
+        file << "ply\n";
+        file << "format ascii 1.0\n";
+        file << "element vertex " << cloud.points.size() << "\n";
+        file << "property float x\n";
+        file << "property float y\n";
+        file << "property float z\n";
+        file << "property float nx\n";
+        file << "property float ny\n";
+        file << "property float nz\n";
+        file << "property uchar red\n";
+        file << "property uchar green\n";
+        file << "property uchar blue\n";
+        file << "end_header\n";
+
+        // Write points, normals, and colors
+        for (size_t i = 0; i < cloud.points.size(); ++i)
+        {
+            const auto& pt = cloud.points[i];
+            const auto& n = cloud.normals[i];
+
+            // Convert RGB from [0.0, 1.0] float to [0, 255] integer
+            int r = static_cast<int>(pt.r * 255.0f);
+            int g = static_cast<int>(pt.g * 255.0f);
+            int b = static_cast<int>(pt.b * 255.0f);
+
+            file << pt.x << " " << pt.y << " " << pt.z << " "
+                << n.nx << " " << n.ny << " " << n.nz << " "
+                << r << " " << g << " " << b << "\n";
+        }
+        return true;
+    }
 }

@@ -1,4 +1,5 @@
 #include "Reconstructor.hpp"
+#include "PointCloudIO.hpp"
 #include <iostream>
 #include <unordered_map>
 #include <cmath>
@@ -236,5 +237,12 @@ namespace Reconstructor
 		}
 
 		std::cout << "Normals calculated successfully for all points.\n";
+
+		std::string plyFilepath = "../../../data/birdfountain_normals.ply";
+		std::cout << "Saving point cloud with normals to PLY...\n";
+		if (PointCloudIO::saveToPLY(plyFilepath, filteredCloud))
+		{
+			std::cout << "PLY saved successfully to " << plyFilepath << "\n";
+		}
 	}
 }
