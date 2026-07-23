@@ -4,6 +4,7 @@
 #include <unordered_map>
 #include <cmath>
 #include <vector>
+#include <queue>
 #include "nanoflann.hpp"
 #include <Eigen/Dense>
 
@@ -79,7 +80,23 @@ namespace
 		bool kdtree_get_bbox(BBOX&) const { return false; }
 	};
 
-	NormalData computeNormalPCA(const PointCloud& cloud, const std::vector<unsigned int>& neighbours, const PointData& centre)
+	struct PropagationEdge
+	{
+		float cost;
+		size_t fromIdx;
+		size_t toIdx;
+
+		bool operator>(const PropagationEdge& other) const
+		{
+			return cost > other.cost; // Min-Heap based on cost
+		}
+	};
+
+	using KDTree = nanoflann::KDTreeSingleIndexAdaptor<
+		nanoflann::L2_Simple_Adaptor<float, PointCloudAdaptor>,
+		PointCloudAdaptor, 3>;
+
+	NormalData computeNormalPCA(const PointCloud& cloud, const std::vector<unsigned int>& neighbours)
 	{
 		if (neighbours.size() < 3) return { 0.0f, 0.0f, 1.0f };
 
@@ -106,14 +123,128 @@ namespace
 		if (solver.info() != Eigen::Success) return { 0.0f, 0.0f, 1.0f };
 
 		Eigen::Vector3f normal = solver.eigenvectors().col(0); // Smallest eigenvalue corresponds to the normal, i.e. the direction of least variance
-		Eigen::Vector3f viewPoint(0.0f - centre.x, 0.0f - centre.y, 0.0f - centre.z);
 		
-		if (normal.dot(viewPoint) < 0.0f)
-		{
-			normal = -normal;
-		}
-
+		// Return unoriented PCA normal, MST will orient it later
 		return { normal.x(), normal.y(), normal.z() };
+	}
+
+	void propagateNormalMST(PointCloud& cloud, const KDTree& kdTree, size_t k_neighbours)
+	{
+		size_t numPoints = cloud.points.size();
+		if (numPoints == 0) return;
+
+		std::vector<bool> visited(numPoints, false);
+		std::priority_queue<PropagationEdge, std::vector<PropagationEdge>, std::greater<PropagationEdge>> minHeap;
+
+		// Calculate global centroid to determine a reliable outward direction for the first normal
+		Eigen::Vector3f globalCentroid(0.0f, 0.0f, 0.0f);
+
+		for (const auto& pt : cloud.points)
+		{
+			globalCentroid.x() += pt.x;
+			globalCentroid.y() += pt.y;
+			globalCentroid.z() += pt.z;
+		}
+		globalCentroid /= static_cast<float>(numPoints);
+
+		std::vector<unsigned int> neighbourIndices(k_neighbours);
+		std::vector<float> neighbourDistances(k_neighbours);
+
+		// Loop through points to ensure disconnected components are also processed
+		for (size_t i = 0; i < numPoints; ++i)
+		{
+			if (visited[i]) continue;
+			
+			size_t seedIdx = i;
+
+			// if this is the first point, find the point farthest from the global centroid to use as the initial seed for MST
+			if (i == 0)
+			{
+				float maxDistSq = -1.0f;
+
+				for (size_t j = 0; j < numPoints; ++j)
+				{
+					Eigen::Vector3d pt(cloud.points[j].x, cloud.points[j].y, cloud.points[j].z);
+					float distSq = (pt - globalCentroid).squaredNorm();
+					if (distSq > maxDistSq)
+					{
+						maxDistSq = distSq;
+						seedIdx = j;
+					}
+				}
+			}
+
+			visited[seedIdx] = true;
+
+			// Orient the seed normal to point outward from the global centroid
+			Eigen::Vector3f seedPt(cloud.points[seedIdx].x, cloud.points[seedIdx].y, cloud.points[seedIdx].z);
+			Eigen::Vector3f outwardDir = seedPt - globalCentroid;
+			Eigen::Vector3f seedNormal(cloud.normals[seedIdx].nx, cloud.normals[seedIdx].ny, cloud.normals[seedIdx].nz);
+
+			if (seedNormal.dot(outwardDir) < 0.0f)
+			{
+				// Flip the normal
+				cloud.normals[seedIdx].nx *= -1.0f;
+				cloud.normals[seedIdx].ny *= -1.0f;
+				cloud.normals[seedIdx].nz *= -1.0f;
+				seedNormal = -seedNormal;
+			}
+
+			// Add the seed point's neighbors to the priority queue
+			float queryPoint[3] = { cloud.points[seedIdx].x, cloud.points[seedIdx].y, cloud.points[seedIdx].z };
+			size_t numFound = kdTree.knnSearch(queryPoint, k_neighbours, neighbourIndices.data(), neighbourDistances.data());
+
+			for (size_t j = 0; j < numFound; ++j)
+			{
+				size_t neighborIdx = neighbourIndices[j];
+				if (!visited[neighborIdx])
+				{
+					Eigen::Vector3f neighborNormal(cloud.normals[neighborIdx].nx, cloud.normals[neighborIdx].ny, cloud.normals[neighborIdx].nz);
+					// Calculate cost as the angle between normals (1 - dot product), parallel normals have cost 0, opposite normals have cost 2
+					float cost = 1.0f - std::abs(seedNormal.dot(neighborNormal));
+					minHeap.push({ cost, seedIdx, neighborIdx });
+				}
+			}
+
+			// Process MST propagation
+			while (!minHeap.empty())
+			{
+				PropagationEdge edge = minHeap.top();
+				minHeap.pop();
+				
+				size_t currentIdx = edge.toIdx;
+				if (visited[currentIdx]) continue;
+
+				visited[currentIdx] = true;
+
+				Eigen::Vector3f fromNormal(cloud.normals[edge.fromIdx].nx, cloud.normals[edge.fromIdx].ny, cloud.normals[edge.fromIdx].nz);
+				Eigen::Vector3f currentNormal(cloud.normals[currentIdx].nx, cloud.normals[currentIdx].ny, cloud.normals[currentIdx].nz);
+
+				// If normals are pointing in opposite directions, flip the current normal
+				if (fromNormal.dot(currentNormal) < 0.0f)
+				{
+					cloud.normals[currentIdx].nx *= -1.0f;
+					cloud.normals[currentIdx].ny *= -1.0f;
+					cloud.normals[currentIdx].nz *= -1.0f;
+					currentNormal = -currentNormal;
+				}
+
+				// Add unvisited neighbors of the current point to the priority queue
+				float queryPoint[3] = { cloud.points[currentIdx].x, cloud.points[currentIdx].y, cloud.points[currentIdx].z };
+				numFound = kdTree.knnSearch(queryPoint, k_neighbours, neighbourIndices.data(), neighbourDistances.data());
+
+				for (size_t j = 0; j < numFound; ++j)
+				{
+					size_t neighborIdx = neighbourIndices[j];
+					if (!visited[neighborIdx])
+					{
+						Eigen::Vector3f neighborNormal(cloud.normals[neighborIdx].nx, cloud.normals[neighborIdx].ny, cloud.normals[neighborIdx].nz);
+						float cost = 1.0f - std::abs(currentNormal.dot(neighborNormal));
+						minHeap.push({ cost, currentIdx, neighborIdx });
+					}
+				}
+			}
+		}
 	}
 }
 
@@ -170,10 +301,6 @@ namespace Reconstructor
 		std::cout << "Building KD-Tree for nearest neighbor search...\n";
 
 		PointCloudAdaptor adaptor(filteredCloud);
-		using KDTree = nanoflann::KDTreeSingleIndexAdaptor<
-			nanoflann::L2_Simple_Adaptor<float, PointCloudAdaptor>,
-			PointCloudAdaptor,
-			3 /* dimension */>;
 
 		KDTree kdTree(3, adaptor, nanoflann::KDTreeSingleIndexAdaptorParams(15)); // 3 is for dimension, 15 is the maximum number of points in a leaf node
 		kdTree.buildIndex();
@@ -186,6 +313,8 @@ namespace Reconstructor
 		std::vector<unsigned int> neighbourIndices(K_NEIGHBOURS);
 		std::vector<float> neighbourDistances(K_NEIGHBOURS);
 		size_t failedPCA = 0;
+
+		std::cout << "Calculating normals using PCA with K=" << K_NEIGHBOURS << " nearest neighbors...\n";
 
 		for (size_t i = 0; i < filteredCloud.points.size(); ++i)
 		{
@@ -202,7 +331,7 @@ namespace Reconstructor
 			if (numFound > 0)
 			{
 				neighbourIndices.resize(numFound);
-				filteredCloud.normals[i] = computeNormalPCA(filteredCloud, neighbourIndices, pt);
+				filteredCloud.normals[i] = computeNormalPCA(filteredCloud, neighbourIndices);
 				neighbourIndices.resize(K_NEIGHBOURS);
 
 				// Check if PCA failed to compute a valid normal (i.e., returned the default normal)
@@ -226,6 +355,10 @@ namespace Reconstructor
 			std::cout << "Warning: " << failedPCA << " points resulted in default/failed normals.\n";
 		}
 
+		std::cout << "Propagating normals using Minimum Spanning Tree (MST) to ensure consistent orientation...\n";
+		propagateNormalMST(filteredCloud, kdTree, K_NEIGHBOURS);
+		std::cout << "Normal propagation completed.\n";
+
 		// Print the first 5 calculated normals for verification
 		std::cout << "\n--- DEBUG: First 5 Calculated Normals ---\n";
 		for (size_t i = 0; i < 5 && i < filteredCloud.normals.size(); ++i)
@@ -236,7 +369,7 @@ namespace Reconstructor
 				<< "Normal: [" << n.nx << ", " << n.ny << ", " << n.nz << "]\n";
 		}
 
-		std::cout << "Normals calculated successfully for all points.\n";
+		std::cout << "Normals calculated and oriented successfully for all points.\n";
 
 		std::string plyFilepath = "../../../data/birdfountain_normals.ply";
 		std::cout << "Saving point cloud with normals to PLY...\n";
