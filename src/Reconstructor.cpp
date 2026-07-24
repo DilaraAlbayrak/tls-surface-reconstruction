@@ -83,8 +83,8 @@ namespace
 	struct PropagationEdge
 	{
 		float cost;
-		size_t fromIdx;
-		size_t toIdx;
+		size_t fromIdx; // The index of the point from which the normal is being propagated
+		size_t toIdx;   // The index of the point to which the normal is being propagated
 
 		bool operator>(const PropagationEdge& other) const
 		{
