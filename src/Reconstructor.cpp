@@ -164,7 +164,7 @@ namespace
 
 				for (size_t j = 0; j < numPoints; ++j)
 				{
-					Eigen::Vector3d pt(cloud.points[j].x, cloud.points[j].y, cloud.points[j].z);
+					Eigen::Vector3f pt(cloud.points[j].x, cloud.points[j].y, cloud.points[j].z);
 					float distSq = (pt - globalCentroid).squaredNorm();
 					if (distSq > maxDistSq)
 					{
