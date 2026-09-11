@@ -8,6 +8,11 @@
 #include "nanoflann.hpp"
 #include <Eigen/Dense>
 
+#include <open3d/geometry/PointCloud.h>
+#include <open3d/geometry/TriangleMesh.h>
+#include <open3d/io/TriangleMeshIO.h>
+#include <tuple>
+
 namespace
 {
 	struct VoxelIndex
@@ -281,6 +286,33 @@ namespace Reconstructor
 		return downsampledCloud;
 	}
 
+	void generateMeshPoisson(const PointCloud& cloud, const std::string& outputPath)
+	{
+		if (cloud.points.empty() || cloud.normals.empty())
+		{
+			std::cerr << "Error: Point cloud is empty or normals are not computed. Cannot generate mesh.\n";
+			return;
+		}
+
+		open3d::geometry::PointCloud o3dCloud;
+		o3dCloud.points_.reserve(cloud.points.size());
+		o3dCloud.normals_.reserve(cloud.normals.size());
+		o3dCloud.colors_.reserve(cloud.points.size());
+
+		for (size_t i = 0; i < cloud.points.size(); ++i)
+		{
+			o3dCloud.points_.emplace_back(cloud.points[i].x, cloud.points[i].y, cloud.points[i].z);
+			o3dCloud.normals_.emplace_back(cloud.normals[i].nx, cloud.normals[i].ny, cloud.normals[i].nz);
+			o3dCloud.colors_.emplace_back(cloud.points[i].r, cloud.points[i].g, cloud.points[i].b);
+		}
+
+		const size_t depth = 12; // Depth of the octree for Poisson reconstruction
+		auto poissonMesh = open3d::geometry::TriangleMesh::CreateFromPointCloudPoisson(o3dCloud, depth);
+		auto mesh = std::get<0>(poissonMesh);
+
+		open3d::io::WriteTriangleMesh(outputPath, *mesh);
+	}
+
 	void process(const PointCloud& cloud)
 	{
 		if (cloud.points.empty())
@@ -377,5 +409,10 @@ namespace Reconstructor
 		{
 			std::cout << "PLY saved successfully to " << plyFilepath << "\n";
 		}
+
+		std::cout << "Generating mesh using Poisson Surface Reconstruction...\n";
+		std::string objFilepath = "../../../data/birdfountain_mesh.obj";
+		generateMeshPoisson(filteredCloud, objFilepath);
+		std::cout << "Mesh generated and saved to " << objFilepath << "\n";
 	}
 }
