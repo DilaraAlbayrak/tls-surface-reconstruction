@@ -15,7 +15,7 @@ add_executable(TlsSurfaceReconstruction ${SOURCES})
 
 # Define the base directory for Open3D once. 
 # CACHE PATH allows overriding this via CMake GUI or CLI on different machines.
-set(OPEN3D_BASE_DIR "C:/Users/k09100da/Libs/Open3D" CACHE PATH "Base directory for Open3D installation")
+set(OPEN3D_BASE_DIR "C:/Users/Dilara/Libs/Open3D" CACHE PATH "Base directory for Open3D installation")
 
 set(Open3D_DIR "${OPEN3D_BASE_DIR}/CMake")
 find_package(Open3D REQUIRED)

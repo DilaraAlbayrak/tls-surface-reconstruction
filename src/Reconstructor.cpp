@@ -6,12 +6,14 @@
 #include <vector>
 #include <queue>
 #include "nanoflann.hpp"
+#include <algorithm>
 #include <Eigen/Dense>
 
 #include <open3d/geometry/PointCloud.h>
 #include <open3d/geometry/TriangleMesh.h>
 #include <open3d/io/TriangleMeshIO.h>
 #include <tuple>
+#include <atomic>
 
 namespace
 {
@@ -141,54 +143,26 @@ namespace
 		std::vector<bool> visited(numPoints, false);
 		std::priority_queue<PropagationEdge, std::vector<PropagationEdge>, std::greater<PropagationEdge>> minHeap;
 
-		// Calculate global centroid to determine a reliable outward direction for the first normal
-		Eigen::Vector3f globalCentroid(0.0f, 0.0f, 0.0f);
-
-		for (const auto& pt : cloud.points)
-		{
-			globalCentroid.x() += pt.x;
-			globalCentroid.y() += pt.y;
-			globalCentroid.z() += pt.z;
-		}
-		globalCentroid /= static_cast<float>(numPoints);
+		// TLS scanner origin point
+		Eigen::Vector3f scannerLocation(0.0f, 0.0f, 0.0f);
 
 		std::vector<unsigned int> neighbourIndices(k_neighbours);
 		std::vector<float> neighbourDistances(k_neighbours);
 
-		// Loop through points to ensure disconnected components are also processed
 		for (size_t i = 0; i < numPoints; ++i)
 		{
 			if (visited[i]) continue;
-			
+
 			size_t seedIdx = i;
-
-			// if this is the first point, find the point farthest from the global centroid to use as the initial seed for MST
-			if (i == 0)
-			{
-				float maxDistSq = -1.0f;
-
-				for (size_t j = 0; j < numPoints; ++j)
-				{
-					Eigen::Vector3f pt(cloud.points[j].x, cloud.points[j].y, cloud.points[j].z);
-					float distSq = (pt - globalCentroid).squaredNorm();
-					if (distSq > maxDistSq)
-					{
-						maxDistSq = distSq;
-						seedIdx = j;
-					}
-				}
-			}
-
 			visited[seedIdx] = true;
 
-			// Orient the seed normal to point outward from the global centroid
+			// Orient the seed normal to point towards the scanner origin
 			Eigen::Vector3f seedPt(cloud.points[seedIdx].x, cloud.points[seedIdx].y, cloud.points[seedIdx].z);
-			Eigen::Vector3f outwardDir = seedPt - globalCentroid;
+			Eigen::Vector3f towardsScanner = scannerLocation - seedPt;
 			Eigen::Vector3f seedNormal(cloud.normals[seedIdx].nx, cloud.normals[seedIdx].ny, cloud.normals[seedIdx].nz);
 
-			if (seedNormal.dot(outwardDir) < 0.0f)
+			if (seedNormal.dot(towardsScanner) < 0.0f)
 			{
-				// Flip the normal
 				cloud.normals[seedIdx].nx *= -1.0f;
 				cloud.normals[seedIdx].ny *= -1.0f;
 				cloud.normals[seedIdx].nz *= -1.0f;
@@ -290,7 +264,7 @@ namespace Reconstructor
 	{
 		if (cloud.points.empty() || cloud.normals.empty())
 		{
-			std::cerr << "Error: Point cloud is empty or normals are not computed. Cannot generate mesh.\n";
+			std::cerr << "Error: Point cloud is empty or normals are not computed.\n";
 			return;
 		}
 
@@ -306,10 +280,25 @@ namespace Reconstructor
 			o3dCloud.colors_.emplace_back(cloud.points[i].r, cloud.points[i].g, cloud.points[i].b);
 		}
 
-		const size_t depth = 12; // Depth of the octree for Poisson reconstruction
-		auto poissonMesh = open3d::geometry::TriangleMesh::CreateFromPointCloudPoisson(o3dCloud, depth);
-		auto mesh = std::get<0>(poissonMesh);
+		const size_t depth = 12;
+		auto poissonResult = open3d::geometry::TriangleMesh::CreateFromPointCloudPoisson(o3dCloud, depth);
+		auto mesh = std::get<0>(poissonResult);
+		auto densities = std::get<1>(poissonResult);
 
+		std::vector<double> sortedDensities = densities;
+		std::sort(sortedDensities.begin(), sortedDensities.end());
+		double threshold = sortedDensities[static_cast<size_t>(sortedDensities.size() * 0.10)];
+
+		std::vector<bool> removeMask(densities.size(), false);
+		for (size_t i = 0; i < densities.size(); ++i)
+		{
+			if (densities[i] < threshold)
+			{
+				removeMask[i] = true;
+			}
+		}
+
+		mesh->RemoveVerticesByMask(removeMask);
 		open3d::io::WriteTriangleMesh(outputPath, *mesh);
 	}
 
@@ -323,7 +312,7 @@ namespace Reconstructor
 
 		std::cout << "Processing point cloud with " << cloud.points.size() << " points...\n";
 
-		const float VOXEL_SIZE = 0.05f;
+		const float VOXEL_SIZE = 0.01f;
 		std::cout << "Running Voxel Grid Downsampling with voxel size: " << VOXEL_SIZE << "m...\n";
 
 		PointCloud filteredCloud = voxelGridDownsample(cloud, VOXEL_SIZE);
@@ -342,31 +331,33 @@ namespace Reconstructor
 		const size_t K_NEIGHBOURS = 15;
 		filteredCloud.normals.resize(filteredCloud.points.size());
 
-		std::vector<unsigned int> neighbourIndices(K_NEIGHBOURS);
-		std::vector<float> neighbourDistances(K_NEIGHBOURS);
-		size_t failedPCA = 0;
+		// Removed duplicate failedPCA, neighbourIndices, and neighbourDistances declarations
 
 		std::cout << "Calculating normals using PCA with K=" << K_NEIGHBOURS << " nearest neighbors...\n";
 
-		for (size_t i = 0; i < filteredCloud.points.size(); ++i)
+		std::atomic<size_t> failedPCA = 0;
+
+#pragma omp parallel for schedule(dynamic)
+		for (int i = 0; i < static_cast<int>(filteredCloud.points.size()); ++i)
 		{
+			std::vector<unsigned int> localIndices(K_NEIGHBOURS);
+			std::vector<float> localDistances(K_NEIGHBOURS);
+
 			const auto& pt = filteredCloud.points[i];
 			float queryPoint[3] = { pt.x, pt.y, pt.z };
 
 			size_t numFound = kdTree.knnSearch(
 				queryPoint,
 				K_NEIGHBOURS,
-				neighbourIndices.data(),
-				neighbourDistances.data()
+				localIndices.data(),
+				localDistances.data()
 			);
 
 			if (numFound > 0)
 			{
-				neighbourIndices.resize(numFound);
-				filteredCloud.normals[i] = computeNormalPCA(filteredCloud, neighbourIndices);
-				neighbourIndices.resize(K_NEIGHBOURS);
+				localIndices.resize(numFound);
+				filteredCloud.normals[i] = computeNormalPCA(filteredCloud, localIndices);
 
-				// Check if PCA failed to compute a valid normal (i.e., returned the default normal)
 				if (filteredCloud.normals[i].nx == 0.0f &&
 					filteredCloud.normals[i].ny == 0.0f &&
 					filteredCloud.normals[i].nz == 1.0f)
@@ -381,10 +372,9 @@ namespace Reconstructor
 			}
 		}
 
-		// Print warning for degenerate normals
-		if (failedPCA > 0)
+		if (failedPCA.load() > 0)
 		{
-			std::cout << "Warning: " << failedPCA << " points resulted in default/failed normals.\n";
+			std::cout << "Warning: " << failedPCA.load() << " points resulted in default/failed normals.\n";
 		}
 
 		std::cout << "Propagating normals using Minimum Spanning Tree (MST) to ensure consistent orientation...\n";
