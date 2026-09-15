@@ -280,7 +280,7 @@ namespace Reconstructor
 			o3dCloud.colors_.emplace_back(cloud.points[i].r, cloud.points[i].g, cloud.points[i].b);
 		}
 
-		const size_t depth = 12;
+		const size_t depth = 11;
 		auto poissonResult = open3d::geometry::TriangleMesh::CreateFromPointCloudPoisson(o3dCloud, depth);
 		auto mesh = std::get<0>(poissonResult);
 		auto densities = std::get<1>(poissonResult);

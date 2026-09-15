@@ -13,12 +13,32 @@ set(SOURCES
 
 add_executable(TlsSurfaceReconstruction ${SOURCES})
 
-# Define the base directory for Open3D once. 
+# Define the base directory for Open3D once.
 # CACHE PATH allows overriding this via CMake GUI or CLI on different machines.
-set(OPEN3D_BASE_DIR "C:/Users/Dilara/Libs/Open3D" CACHE PATH "Base directory for Open3D installation")
+file(TO_CMAKE_PATH "$ENV{USERPROFILE}/Libs/Open3D" OPEN3D_DEFAULT_BASE_DIR)
+set(OPEN3D_BASE_DIR "${OPEN3D_DEFAULT_BASE_DIR}" CACHE PATH "Base directory for Open3D installation")
+set(Open3D_DIR "${OPEN3D_BASE_DIR}/CMake" CACHE PATH "Directory containing Open3DConfig.cmake")
 
-set(Open3D_DIR "${OPEN3D_BASE_DIR}/CMake")
-find_package(Open3D REQUIRED)
+# Visual Studio/CMake keeps old cache values after a project is moved between users.
+# If the cached path is stale, fall back to the current user's standard Libs/Open3D path.
+if(NOT EXISTS "${Open3D_DIR}/Open3DConfig.cmake" AND
+   EXISTS "${OPEN3D_DEFAULT_BASE_DIR}/CMake/Open3DConfig.cmake")
+    set(OPEN3D_BASE_DIR "${OPEN3D_DEFAULT_BASE_DIR}" CACHE PATH "Base directory for Open3D installation" FORCE)
+    set(Open3D_DIR "${OPEN3D_DEFAULT_BASE_DIR}/CMake" CACHE PATH "Directory containing Open3DConfig.cmake" FORCE)
+endif()
+
+find_package(Open3D CONFIG REQUIRED)
+
+# The local Open3D package provides Release import files. Reuse them for Debug-like builds.
+foreach(open3d_target IN ITEMS Open3D::Open3D Open3D::tbb)
+    if(TARGET ${open3d_target})
+        set_target_properties(${open3d_target} PROPERTIES
+            MAP_IMPORTED_CONFIG_DEBUG Release
+            MAP_IMPORTED_CONFIG_RELWITHDEBINFO Release
+            MAP_IMPORTED_CONFIG_MINSIZEREL Release
+        )
+    endif()
+endforeach()
 
 target_include_directories(TlsSurfaceReconstruction PRIVATE 
     ${CMAKE_CURRENT_SOURCE_DIR}/include
