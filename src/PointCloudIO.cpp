@@ -1,6 +1,7 @@
 #include "PointCloudIO.hpp"
 #include <iostream>
 #include <fstream>
+#include <sstream>
 
 namespace
 {
@@ -42,6 +43,72 @@ namespace PointCloudIO
             pt.b = b_raw / 255.0f;
             cloud.points.push_back(pt);
         }
+        return true;
+    }
+
+    bool loadFromPLY(const std::string& filepath, PointCloud& cloud)
+    {
+        std::ifstream file(filepath);
+        if (!file.is_open()) return false;
+
+        std::string line;
+        size_t vertexCount = 0;
+        bool headerEnded = false;
+        bool hasNormalsFirst = true;
+        int propCount = 0;
+
+        while (std::getline(file, line))
+        {
+            if (line.find("element vertex") != std::string::npos)
+            {
+                std::string dummy1, dummy2;
+                std::istringstream iss(line);
+                iss >> dummy1 >> dummy2 >> vertexCount;
+            }
+            else if (line.find("property") != std::string::npos)
+            {
+                if (propCount == 3 && line.find("red") != std::string::npos)
+                {
+                    hasNormalsFirst = false;
+                }
+                propCount++;
+            }
+            else if (line == "end_header")
+            {
+                headerEnded = true;
+                break;
+            }
+        }
+
+        if (!headerEnded || vertexCount == 0) return false;
+
+        cloud.points.reserve(vertexCount);
+        cloud.normals.reserve(vertexCount);
+
+        PointData pt;
+        NormalData n;
+        int r, g, b;
+
+        for (size_t i = 0; i < vertexCount; ++i)
+        {
+            if (hasNormalsFirst)
+            {
+                if (!(file >> pt.x >> pt.y >> pt.z >> n.nx >> n.ny >> n.nz >> r >> g >> b)) break;
+            }
+            else
+            {
+                if (!(file >> pt.x >> pt.y >> pt.z >> r >> g >> b >> n.nx >> n.ny >> n.nz)) break;
+            }
+
+            pt.r = r / 255.0f;
+            pt.g = g / 255.0f;
+            pt.b = b / 255.0f;
+            pt.intensity = 0;
+
+            cloud.points.push_back(pt);
+            cloud.normals.push_back(n);
+        }
+
         return true;
     }
 

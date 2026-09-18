@@ -12,4 +12,5 @@ namespace PointCloudIO
 	bool loadOrCreateBin(const std::string& txtFilePath, const std::string& binFilePath, PointCloud& pointCloud);
 	
 	bool saveToPLY(const std::string& filepath, const PointCloud& pointCloud);
+	bool loadFromPLY(const std::string& filepath, PointCloud& cloud);
 };

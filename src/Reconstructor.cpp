@@ -14,6 +14,7 @@
 #include <open3d/io/TriangleMeshIO.h>
 #include <tuple>
 #include <atomic>
+#include <fstream>
 
 namespace
 {
@@ -280,7 +281,7 @@ namespace Reconstructor
 			o3dCloud.colors_.emplace_back(cloud.points[i].r, cloud.points[i].g, cloud.points[i].b);
 		}
 
-		const size_t depth = 11;
+		const size_t depth = 16;
 		auto poissonResult = open3d::geometry::TriangleMesh::CreateFromPointCloudPoisson(o3dCloud, depth);
 		auto mesh = std::get<0>(poissonResult);
 		auto densities = std::get<1>(poissonResult);
@@ -304,100 +305,118 @@ namespace Reconstructor
 
 	void process(const PointCloud& cloud)
 	{
-		if (cloud.points.empty())
+		std::string plyFilepath = "../../../data/birdfountain_normals.ply";
+		PointCloud filteredCloud;
+
+		std::ifstream plyCheck(plyFilepath);
+		if (plyCheck.good())
 		{
-			std::cerr << "Error: Point cloud is empty. Cannot process.\n";
-			return;
+			plyCheck.close();
+			std::cout << "Found existing PLY file. Bypassing normal calculation and loading directly from " << plyFilepath << "...\n";
+
+			if (!PointCloudIO::loadFromPLY(plyFilepath, filteredCloud))
+			{
+				std::cerr << "Error: Failed to load existing PLY file.\n";
+				return;
+			}
+			std::cout << "Successfully loaded " << filteredCloud.points.size() << " points with normals from PLY.\n";
 		}
+		else
+		{
+			if (cloud.points.empty())
+			{
+				std::cerr << "Error: Point cloud is empty. Cannot process.\n";
+				return;
+			}
 
-		std::cout << "Processing point cloud with " << cloud.points.size() << " points...\n";
+			std::cout << "Processing point cloud with " << cloud.points.size() << " points...\n";
 
-		const float VOXEL_SIZE = 0.01f;
-		std::cout << "Running Voxel Grid Downsampling with voxel size: " << VOXEL_SIZE << "m...\n";
+			const float VOXEL_SIZE = 0.005f;
+			std::cout << "Running Voxel Grid Downsampling with voxel size: " << VOXEL_SIZE << "m...\n";
 
-		PointCloud filteredCloud = voxelGridDownsample(cloud, VOXEL_SIZE);
+			filteredCloud = voxelGridDownsample(cloud, VOXEL_SIZE);
 
-		std::cout << "Downsampled point cloud size: " << filteredCloud.points.size() << " points.\n";
+			std::cout << "Downsampled point cloud size: " << filteredCloud.points.size() << " points.\n";
 
-		std::cout << "Building KD-Tree for nearest neighbor search...\n";
+			std::cout << "Building KD-Tree for nearest neighbor search...\n";
 
-		PointCloudAdaptor adaptor(filteredCloud);
+			PointCloudAdaptor adaptor(filteredCloud);
 
-		KDTree kdTree(3, adaptor, nanoflann::KDTreeSingleIndexAdaptorParams(15)); // 3 is for dimension, 15 is the maximum number of points in a leaf node
-		kdTree.buildIndex();
+			KDTree kdTree(3, adaptor, nanoflann::KDTreeSingleIndexAdaptorParams(15)); // 3 is for dimension, 15 is the maximum number of points in a leaf node
+			kdTree.buildIndex();
 
-		std::cout << "KD-Tree built successfully.\n";
+			std::cout << "KD-Tree built successfully.\n";
 
-		const size_t K_NEIGHBOURS = 15;
-		filteredCloud.normals.resize(filteredCloud.points.size());
+			const size_t K_NEIGHBOURS = 15;
+			filteredCloud.normals.resize(filteredCloud.points.size());
 
-		// Removed duplicate failedPCA, neighbourIndices, and neighbourDistances declarations
+			// Removed duplicate failedPCA, neighbourIndices, and neighbourDistances declarations
 
-		std::cout << "Calculating normals using PCA with K=" << K_NEIGHBOURS << " nearest neighbors...\n";
+			std::cout << "Calculating normals using PCA with K=" << K_NEIGHBOURS << " nearest neighbors...\n";
 
-		std::atomic<size_t> failedPCA = 0;
+			std::atomic<size_t> failedPCA = 0;
 
 #pragma omp parallel for schedule(dynamic)
-		for (int i = 0; i < static_cast<int>(filteredCloud.points.size()); ++i)
-		{
-			std::vector<unsigned int> localIndices(K_NEIGHBOURS);
-			std::vector<float> localDistances(K_NEIGHBOURS);
-
-			const auto& pt = filteredCloud.points[i];
-			float queryPoint[3] = { pt.x, pt.y, pt.z };
-
-			size_t numFound = kdTree.knnSearch(
-				queryPoint,
-				K_NEIGHBOURS,
-				localIndices.data(),
-				localDistances.data()
-			);
-
-			if (numFound > 0)
+			for (int i = 0; i < static_cast<int>(filteredCloud.points.size()); ++i)
 			{
-				localIndices.resize(numFound);
-				filteredCloud.normals[i] = computeNormalPCA(filteredCloud, localIndices);
+				std::vector<unsigned int> localIndices(K_NEIGHBOURS);
+				std::vector<float> localDistances(K_NEIGHBOURS);
 
-				if (filteredCloud.normals[i].nx == 0.0f &&
-					filteredCloud.normals[i].ny == 0.0f &&
-					filteredCloud.normals[i].nz == 1.0f)
+				const auto& pt = filteredCloud.points[i];
+				float queryPoint[3] = { pt.x, pt.y, pt.z };
+
+				size_t numFound = kdTree.knnSearch(
+					queryPoint,
+					K_NEIGHBOURS,
+					localIndices.data(),
+					localDistances.data()
+				);
+
+				if (numFound > 0)
 				{
+					localIndices.resize(numFound);
+					filteredCloud.normals[i] = computeNormalPCA(filteredCloud, localIndices);
+
+					if (filteredCloud.normals[i].nx == 0.0f &&
+						filteredCloud.normals[i].ny == 0.0f &&
+						filteredCloud.normals[i].nz == 1.0f)
+					{
+						failedPCA++;
+					}
+				}
+				else
+				{
+					filteredCloud.normals[i] = { 0.0f, 0.0f, 1.0f };
 					failedPCA++;
 				}
 			}
-			else
+
+			if (failedPCA.load() > 0)
 			{
-				filteredCloud.normals[i] = { 0.0f, 0.0f, 1.0f };
-				failedPCA++;
+				std::cout << "Warning: " << failedPCA.load() << " points resulted in default/failed normals.\n";
 			}
-		}
 
-		if (failedPCA.load() > 0)
-		{
-			std::cout << "Warning: " << failedPCA.load() << " points resulted in default/failed normals.\n";
-		}
+			std::cout << "Propagating normals using Minimum Spanning Tree (MST) to ensure consistent orientation...\n";
+			propagateNormalMST(filteredCloud, kdTree, K_NEIGHBOURS);
+			std::cout << "Normal propagation completed.\n";
 
-		std::cout << "Propagating normals using Minimum Spanning Tree (MST) to ensure consistent orientation...\n";
-		propagateNormalMST(filteredCloud, kdTree, K_NEIGHBOURS);
-		std::cout << "Normal propagation completed.\n";
+			// Print the first 5 calculated normals for verification
+			std::cout << "\n--- DEBUG: First 5 Calculated Normals ---\n";
+			for (size_t i = 0; i < 5 && i < filteredCloud.normals.size(); ++i)
+			{
+				const auto& pt = filteredCloud.points[i];
+				const auto& n = filteredCloud.normals[i];
+				std::cout << "Point (" << pt.x << ", " << pt.y << ", " << pt.z << ") -> "
+					<< "Normal: [" << n.nx << ", " << n.ny << ", " << n.nz << "]\n";
+			}
 
-		// Print the first 5 calculated normals for verification
-		std::cout << "\n--- DEBUG: First 5 Calculated Normals ---\n";
-		for (size_t i = 0; i < 5 && i < filteredCloud.normals.size(); ++i)
-		{
-			const auto& pt = filteredCloud.points[i];
-			const auto& n = filteredCloud.normals[i];
-			std::cout << "Point (" << pt.x << ", " << pt.y << ", " << pt.z << ") -> "
-				<< "Normal: [" << n.nx << ", " << n.ny << ", " << n.nz << "]\n";
-		}
+			std::cout << "Normals calculated and oriented successfully for all points.\n";
 
-		std::cout << "Normals calculated and oriented successfully for all points.\n";
-
-		std::string plyFilepath = "../../../data/birdfountain_normals.ply";
-		std::cout << "Saving point cloud with normals to PLY...\n";
-		if (PointCloudIO::saveToPLY(plyFilepath, filteredCloud))
-		{
-			std::cout << "PLY saved successfully to " << plyFilepath << "\n";
+			std::cout << "Saving point cloud with normals to PLY...\n";
+			if (PointCloudIO::saveToPLY(plyFilepath, filteredCloud))
+			{
+				std::cout << "PLY saved successfully to " << plyFilepath << "\n";
+			}
 		}
 
 		std::cout << "Generating mesh using Poisson Surface Reconstruction...\n";
